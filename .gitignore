@@ -1,0 +1,16 @@
+# 依赖与构建产物
+node_modules/
+dist/
+dist-signed/
+build/win-unpacked/
+build/portable/
+
+# 本地诊断产物
+build/_*.json
+build/_*.log
+build/shot_*.png
+build/frame.png
+
+# 系统
+.DS_Store
+Thumbs.db

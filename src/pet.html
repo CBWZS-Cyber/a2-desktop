@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' file:; media-src 'self' file:; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+<title>小张</title>
+<style>
+  :root { --ink: #16233d; }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-user-select: none; user-select: none; }
+  html, body { width: 100%; height: 100%; background: transparent; overflow: hidden; }
+
+  #stage {
+    position: relative;
+    width: 100%; height: 100%;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: flex-end;
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    cursor: pointer;
+  }
+
+  /* ── 话语框 ───────────────────────────────────────────── */
+  #bubble {
+    position: absolute;
+    left: 7px;
+    right: 7px;
+    bottom: 234px;
+    z-index: 2;
+    text-align: center;
+    transform: translateY(6px) scale(.96);
+    max-width: 186px;
+    padding: 8px 11px;
+    background: #ffffff;
+    color: var(--ink);
+    font-size: 12px;
+    line-height: 1.5;
+    border-radius: 12px;
+    border: 1px solid #d8e2f0;
+    box-shadow: 0 6px 18px rgba(22, 35, 61, .16);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .22s ease, transform .22s cubic-bezier(.2,.9,.3,1.2);
+    word-break: break-word;
+  }
+  #bubble::after {
+    content: "";
+    position: absolute;
+    left: 50%; bottom: -6px;
+    width: 10px; height: 10px;
+    margin-left: -5px;
+    background: #fff;
+    border-right: 1px solid #d8e2f0;
+    border-bottom: 1px solid #d8e2f0;
+    transform: rotate(45deg);
+  }
+  #bubble.show { opacity: 1; transform: translateY(0) scale(1); }
+
+  /* ── 角色：静帧 + 视频两层 ────────────────────────────── */
+  #petbox {
+    position: relative;
+    z-index: 1;
+    width: 168px;
+    transform-origin: 50% 100%;
+    animation: breathe 3.6s ease-in-out infinite;
+    will-change: transform;
+  }
+  #pet {
+    display: block;
+    width: 100%;
+    height: auto;
+    filter: drop-shadow(0 10px 12px rgba(12, 22, 40, .28));
+    -webkit-user-drag: none;
+  }
+  #vid {
+    position: absolute;
+    left: 50%;
+    top: -98px;
+    height: 188%;              /* 视频里角色只占 48.7% 高，放大到 220px，与静帧同尺寸 */
+    width: auto;
+    transform: translateX(-50%);
+    object-fit: contain;
+    opacity: 0;
+    pointer-events: none;      /* 视频层不吃鼠标，拖动与点击仍归容器 */
+    filter: drop-shadow(0 10px 12px rgba(12, 22, 40, .28));
+    transition: opacity .16s linear;
+  }
+  /* 开播后视频接管显示；播完停在末帧，回退静帧也同尺寸，看不出切换 */
+  #petbox.playing #vid { opacity: 1; }
+  #petbox.playing #pet { visibility: hidden; }
+
+  @keyframes breathe {
+    0%   { transform: scale(1)     translateY(0); }
+    50%  { transform: scale(1.018) translateY(-2px); }
+    100% { transform: scale(1)     translateY(0); }
+  }
+  #petbox.enter { animation: rise .6s cubic-bezier(.16,.9,.3,1.06) both, breathe 3.6s ease-in-out .6s infinite; }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(26px) scale(.94); }
+    to   { opacity: 1; transform: translateY(0)    scale(1); }
+  }
+  #petbox.press { animation: press .2s ease-out; }
+  @keyframes press {
+    0% { transform: scale(1); } 55% { transform: scale(.94, 1.04); } 100% { transform: scale(1); }
+  }
+  #petbox.dragging { animation: none; transform: scale(1.02); }
+
+  /* 站立阴影 */
+  #shadow {
+    position: absolute; bottom: 2px; left: 50%;
+    width: 96px; height: 12px; margin-left: -48px;
+    background: radial-gradient(ellipse at center, rgba(20,32,56,.30), rgba(20,32,56,0) 70%);
+    pointer-events: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    #petbox, #petbox.enter, #petbox.press { animation: none !important; }
+  }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <div id="bubble"></div>
+    <div id="petbox">
+      <img id="pet" src="../assets/zx_idle.png" alt="小张" draggable="false" />
+      <video id="vid" muted playsinline preload="auto" aria-hidden="true">
+        <source src="../assets/zx_bounce.webm" type="video/webm" />
+      </video>
+    </div>
+    <div id="shadow"></div>
+  </div>
+
+<script>
+(function () {
+  const stage = document.getElementById('stage');
+  const box = document.getElementById('petbox');
+  const pet = document.getElementById('pet');
+  const vid = document.getElementById('vid');
+  const bubble = document.getElementById('bubble');
+
+  const LINES = [
+    '点我一下，进去看看～',
+    '今天的错题，整理了吗？',
+    '教材里有不明白的，问我。',
+    '累了就歇会儿，我在这儿。',
+    '拖我到别的地方也行。',
+    '错因归好了，一眼就能看出弱在哪。',
+    '学习中心在等你。',
+    '我在这儿看着你的进度呢。',
+  ];
+
+  let li = Math.floor(Math.random() * LINES.length);
+  let bubbleTimer = null;
+  let hoverTimer = null;
+  let videoOk = false;
+  let saidOnce = false;
+
+  // ── 视频（透明 webm）：入场与点击时播一次，失败自动退回静帧 ──
+  vid.addEventListener('playing', () => {
+    videoOk = true;
+    box.classList.add('playing');
+  });
+  // 这个 webm 没写时长元数据（duration=NaN），不能等 ended：
+  // 实测 t=3.0s 已回到站姿（与静帧同姿势同尺寸），按 3.1s 收尾
+  const LAND_MS = 3100;
+  let landTimer = null;
+
+  function land() {
+    if (landTimer) {
+      clearTimeout(landTimer);
+      landTimer = null;
+    }
+    if (box.classList.contains('playing')) {
+      try {
+        vid.pause();
+      } catch (_) {}
+      box.classList.remove('playing');
+    }
+    if (!saidOnce) {
+      saidOnce = true;
+      say(LINES[li], 4600);
+    }
+  }
+
+  function scheduleLanding() {
+    if (landTimer) clearTimeout(landTimer);
+    landTimer = setTimeout(land, LAND_MS);
+  }
+
+  // 播完回到静帧（两者同尺寸，切换不可见）
+  vid.addEventListener('ended', land);
+  vid.addEventListener('error', () => box.classList.remove('playing'));
+
+  function playOnce() {
+    if (!vid.querySelector('source')) return;
+    try {
+      bubble.classList.remove('show'); // 蹦跳时先不说话，免得气泡被角色压住
+      vid.currentTime = 0;
+      const p = vid.play();
+      scheduleLanding();
+      if (p && p.catch) p.catch(() => box.classList.remove('playing'));
+    } catch (_) {
+      box.classList.remove('playing');
+    }
+  }
+
+  function say(text, ms) {
+    bubble.textContent = text;
+    bubble.classList.add('show');
+    clearTimeout(bubbleTimer);
+    bubbleTimer = setTimeout(() => bubble.classList.remove('show'), ms || 4200);
+  }
+  function sayNext() {
+    li = (li + 1) % LINES.length;
+    say(LINES[li]);
+  }
+
+  // 入场：先播弹跳视频，落地后说第一句；视频没播起来就走兜底
+  requestAnimationFrame(() => {
+    box.classList.add('enter');
+    setTimeout(() => { if (window.pet) window.pet.settled(); }, 120);
+    playOnce();
+  });
+
+  // 主动搭话：每 25~40 秒一次
+  (function loop() {
+    const wait = 25000 + Math.random() * 15000;
+    setTimeout(() => {
+      if (!bubble.classList.contains('show') && !document.hidden) sayNext();
+      loop();
+    }, wait);
+  })();
+
+  // ── 交互：按下 → 可能要拖；松手 → 移动很小就算点击 ──────────
+  let down = null;
+  let dragging = false;
+
+  stage.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    lastHit = true;                       // 按住期间必须是"收鼠标"状态
+    if (window.pet) window.pet.hit(true);
+    stage.setPointerCapture(e.pointerId);
+    down = { x: e.screenX, y: e.screenY, moved: 0 };
+    dragging = false;
+  });
+
+  stage.addEventListener('pointermove', (e) => {
+    if (!down) return;
+    const dx = e.screenX - down.x;
+    const dy = e.screenY - down.y;
+    down.moved = Math.max(down.moved, Math.hypot(dx, dy));
+    if (!dragging && down.moved > 4) {
+      dragging = true;
+      box.classList.add('dragging');
+      bubble.classList.remove('show');
+      if (window.pet) window.pet.dragStart();
+    }
+  });
+
+  function endDrag(e) {
+    if (!down) return;
+    try { stage.releasePointerCapture(e.pointerId); } catch (_) {}
+    const moved = down.moved;
+    down = null;
+
+    if (dragging) {
+      dragging = false;
+      box.classList.remove('dragging');
+      if (window.pet) window.pet.dragEnd();
+      box.classList.add('press');
+      setTimeout(() => box.classList.remove('press'), 220);
+      return;
+    }
+    if (moved <= 4) {
+      box.classList.add('press');
+      setTimeout(() => box.classList.remove('press'), 220);
+      playOnce();                       // 点一下先蹦一下，再开窗
+      if (window.pet) window.pet.openMain();
+    }
+  }
+  stage.addEventListener('pointerup', endDrag);
+  stage.addEventListener('pointercancel', endDrag);
+
+  // 右键菜单
+  window.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    if (window.pet) window.pet.menu();
+  });
+
+  // 悬停搭话（1.2 秒后才说，不打扰）
+  stage.addEventListener('pointerenter', () => {
+    clearTimeout(hoverTimer);
+    hoverTimer = setTimeout(() => { if (!dragging) sayNext(); }, 1200);
+  });
+  stage.addEventListener('pointerleave', () => clearTimeout(hoverTimer));
+
+  window.addEventListener('dragstart', (e) => e.preventDefault());
+
+  // 供冒烟自检读取（含角色实际像素占比，防止视频/静帧切换时大小跳变）
+  function alphaBox(source, w, h) {
+    try {
+      const c = document.createElement('canvas');
+      c.width = w;
+      c.height = h;
+      const ctx = c.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(source, 0, 0, w, h);
+      const d = ctx.getImageData(0, 0, w, h).data;
+      let minX = w, minY = h, maxX = -1, maxY = -1;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if (d[(y * w + x) * 4 + 3] > 16) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+      if (maxX < 0) return null;
+      return { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ── 透明穿透：只有角色的不透明像素接收鼠标，其余位置点得到桌面 ──
+  const MASK_W = 120;
+  let imgMask = null;                 // { c, data }
+  let vidMaskCanvas = null;
+  let vidMaskCtx = null;
+  let vidMask = null;                 // { c, data }
+  let vidMaskAt = 0;
+  let lastHit = null;
+  let rafQueued = false;
+  let lastPoint = null;
+
+  function buildMask(source, srcW, srcH) {
+    const c = document.createElement('canvas');
+    c.width = MASK_W;
+    c.height = Math.max(1, Math.round((MASK_W * srcH) / srcW));
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.clearRect(0, 0, c.width, c.height);
+    ctx.drawImage(source, 0, 0, c.width, c.height);
+    return { c, data: ctx.getImageData(0, 0, c.width, c.height).data };
+  }
+
+  function getImgMask() {
+    if (!imgMask && pet.naturalWidth) {
+      imgMask = buildMask(pet, pet.naturalWidth, pet.naturalHeight);
+    }
+    return imgMask;
+  }
+
+  function getVidMask() {
+    if (!vid.videoWidth) return null;
+    if (!vidMaskCanvas) {
+      vidMaskCanvas = document.createElement('canvas');
+      vidMaskCanvas.width = MASK_W;
+      vidMaskCanvas.height = Math.max(1, Math.round((MASK_W * vid.videoHeight) / vid.videoWidth));
+      vidMaskCtx = vidMaskCanvas.getContext('2d', { willReadFrequently: true });
+    }
+    const now = performance.now();
+    if (!vidMask || now - vidMaskAt > 90) {
+      vidMaskCtx.clearRect(0, 0, vidMaskCanvas.width, vidMaskCanvas.height);
+      vidMaskCtx.drawImage(vid, 0, 0, vidMaskCanvas.width, vidMaskCanvas.height);
+      vidMask = {
+        c: vidMaskCanvas,
+        data: vidMaskCtx.getImageData(0, 0, vidMaskCanvas.width, vidMaskCanvas.height).data,
+      };
+      vidMaskAt = now;
+    }
+    return vidMask;
+  }
+
+  // cx/cy 用 client 坐标；按元素当前渲染矩形（含 CSS 缩放）映射到遮罩取样
+  function hitTest(cx, cy) {
+    const playing = box.classList.contains('playing');
+    const el = playing ? vid : pet;
+    const mask = playing ? getVidMask() : getImgMask();
+    if (!mask || !mask.data) return true; // 拿不到遮罩就保守命中，宁可不穿透
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return false;
+
+    // 气泡是实心白块：看着像实体就不该把点击透到桌面图标上
+    if (bubble.classList.contains('show')) {
+      const br = bubble.getBoundingClientRect();
+      if (cx >= br.left && cx <= br.right && cy >= br.top && cy <= br.bottom) return true;
+    }
+
+    if (cx < r.left || cx > r.right || cy < r.top || cy > r.bottom) return false;
+    const mx = Math.floor(((cx - r.left) / r.width) * mask.c.width);
+    const my = Math.floor(((cy - r.top) / r.height) * mask.c.height);
+    let best = 0;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const x = mx + dx;
+        const y = my + dy;
+        if (x < 0 || y < 0 || x >= mask.c.width || y >= mask.c.height) continue;
+        const a = mask.data[(y * mask.c.width + x) * 4 + 3];
+        if (a > best) best = a;
+      }
+    }
+    return best > 24;
+  }
+
+  function reportHit(hit) {
+    if (hit === lastHit) return;
+    lastHit = hit;
+    if (window.pet) window.pet.hit(hit);
+  }
+
+  function queueHit(x, y) {
+    lastPoint = { x, y };
+    if (rafQueued) return;
+    rafQueued = true;
+    requestAnimationFrame(() => {
+      rafQueued = false;
+      if (!lastPoint) return;
+      reportHit(hitTest(lastPoint.x, lastPoint.y));
+    });
+  }
+
+  function onMove(e) {
+    queueHit(e.clientX, e.clientY);
+  }
+  window.addEventListener('mousemove', onMove, { passive: true });
+  window.addEventListener('pointermove', onMove, { passive: true });
+  document.addEventListener('mouseleave', () => {
+    lastPoint = null;
+    reportHit(false);
+  });
+
+  // 诊断用：逐帧量角色包围盒（判断入场动画会不会顶出窗口）
+  window.__probeBoxes = async (times) => {
+    const res = [];
+    const vw = vid.videoWidth;
+    const vh = vid.videoHeight;
+    if (!vw) return res;
+    for (const t of times) {
+      if (Math.abs(vid.currentTime - t) > 0.001) {
+        await new Promise((r) => {
+          const on = () => { vid.removeEventListener('seeked', on); setTimeout(r, 40); };
+          vid.addEventListener('seeked', on);
+          vid.currentTime = t;
+        });
+      }
+      const b = alphaBox(vid, vw, vh);
+      res.push({ t, box: b, ratio: b ? +(b.h / vh).toFixed(3) : null });
+    }
+    return res;
+  };
+
+  window.__hitTest = hitTest;
+  window.__hitDebug = () => {
+    const im = getImgMask();
+    const r = pet.getBoundingClientRect();
+    const br = bubble.getBoundingClientRect();
+    return {
+      playing: box.classList.contains('playing'),
+      hasImgMask: !!im,
+      dataLen: im && im.data ? im.data.length : 0,
+      maskSize: im ? im.c.width + 'x' + im.c.height : null,
+      petRect: { l: Math.round(r.left), t: Math.round(r.top), r: Math.round(r.right), b: Math.round(r.bottom) },
+      bubbleRect: { l: Math.round(br.left), t: Math.round(br.top), r: Math.round(br.right), b: Math.round(br.bottom) },
+      bubbleShown: bubble.classList.contains('show'),
+      sample: (() => {
+        if (!im || !im.data) return null;
+        const x = Math.floor(im.c.width / 2);
+        const y = Math.floor(im.c.height / 2);
+        return im.data[(y * im.c.width + x) * 4 + 3];
+      })(),
+    };
+  };
+
+  window.__petInfo = () => {
+    const info = {
+      natural: pet.naturalWidth + 'x' + pet.naturalHeight,
+      video: vid.videoWidth + 'x' + vid.videoHeight,
+      dur: isFinite(vid.duration) ? +vid.duration.toFixed(2) : null,
+      videoOk,
+      readyState: vid.readyState,
+    };
+    if (pet.naturalWidth) info.boxImg = alphaBox(pet, pet.naturalWidth, pet.naturalHeight);
+    if (vid.videoWidth) {
+      info.boxVid = alphaBox(vid, vid.videoWidth, vid.videoHeight);
+      try {
+        const c = document.createElement('canvas');
+        c.width = 240;
+        c.height = Math.round((240 * vid.videoHeight) / vid.videoWidth);
+        c.getContext('2d').drawImage(vid, 0, 0, c.width, c.height);
+        info.frame = c.toDataURL('image/png');
+      } catch (_) {}
+    }
+    return info;
+  };
+})();
+</script>
+</body>
+</html>

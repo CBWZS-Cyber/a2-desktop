@@ -1,0 +1,115 @@
+# Build & sign pipeline for the A2 Learnest desktop app.
+#
+# Why GitHub Actions: SignPath Foundation (free OV-level code signing for open
+# source) only accepts builds produced by a trusted CI system, and only from
+# GitHub / GitLab / Jenkins / Azure DevOps / TeamCity / AppVeyor. It also
+# requires that every job up to the signing request runs on a GitHub-hosted
+# runner — self-hosted runners are not eligible for the open source program.
+#
+# Required repository configuration (values come from the SignPath console):
+#   secrets.SIGNPATH_API_TOKEN   API token with submitter permission
+#   vars.SIGNPATH_ORG_ID         Organization ID
+#   vars.SIGNPATH_PROJECT_SLUG   Project slug
+#   vars.SIGNPATH_POLICY_SLUG    Signing policy slug
+#
+# Note: actions/upload-artifact always packs into a ZIP, so the SignPath
+# artifact configuration root element must be declared as <zip-file>.
+
+name: Build desktop app
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version override (e.g. 1.2.0); empty = use package.json'
+        required: false
+        type: string
+      sign:
+        description: 'Submit a SignPath signing request'
+        required: true
+        default: false
+        type: boolean
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    name: Build and sign
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Pillow (icon generation)
+        run: python -m pip install --upgrade pillow
+
+      - name: Install Inno Setup 6
+        run: choco install innosetup -y --no-progress
+
+      - name: Override version (optional)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.version != '' }}
+        shell: pwsh
+        run: |
+          $v = "${{ inputs.version }}"
+          node -e "const fs=require('fs');const p=require('./package.json');p.version='$v';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          "Version: " + (Get-Content package.json -Raw | ConvertFrom-Json).version
+
+      - name: Build installer
+        run: node build/build.js
+
+      - name: Build portable zip
+        run: node build/make-portable.js
+
+      - name: Upload unsigned artifacts
+        id: upload-unsigned
+        uses: actions/upload-artifact@v7
+        with:
+          name: a2-desktop-unsigned
+          path: |
+            dist/*.exe
+            dist/*.zip
+          if-no-files-found: error
+
+      - name: Submit SignPath signing request
+        if: ${{ inputs.sign == true || startsWith(github.ref, 'refs/tags/v') }}
+        id: sign
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORG_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist-signed
+
+      - name: Upload signed artifacts
+        if: ${{ steps.sign.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: a2-desktop-signed
+          path: dist-signed/**
+          if-no-files-found: error
+
+      - name: Summary
+        shell: pwsh
+        run: |
+          Write-Host "Signing request: ${{ steps.sign.outputs.signing-request-web-url }}"
+          Get-ChildItem dist, dist-signed -ErrorAction SilentlyContinue |
+            Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}} |
+            Format-Table -AutoSize

@@ -1,0 +1,24 @@
+{
+  "name": "a2-desktop",
+  "productName": "A2兴海智学",
+  "version": "1.1.1",
+  "description": "A2 兴海智学 · 桌面助手（小张桌宠 + 学习中心）",
+  "main": "src/main.js",
+  "author": "曹博文",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "build": "node build/build.js",
+    "build:portable": "node build/make-portable.js",
+    "build:icons": "python build/make_icons.py",
+    "shell": "node build/make-shell.js",
+    "smoke": "electron . --smoke",
+    "smoke:flow": "electron . --smoke-flow",
+    "smoke:site": "electron . --smoke-main"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "resedit": "^2.0.3"
+  }
+}

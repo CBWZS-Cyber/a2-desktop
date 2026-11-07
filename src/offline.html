@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>A2 兴海智学 · 连不上</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    background: #0d1220; color: #e8eefc;
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  }
+  .box { text-align: center; max-width: 460px; padding: 32px; }
+  h1 { font-size: 18px; font-weight: 600; letter-spacing: .5px; }
+  p { margin-top: 14px; font-size: 13px; line-height: 1.9; color: #93a3c0; }
+  button {
+    margin-top: 22px; padding: 9px 22px; font-size: 13px; cursor: pointer;
+    color: #0d1220; background: #7fb3ff; border: 0; border-radius: 8px;
+  }
+  button:hover { background: #a3c8ff; }
+  code { color: #ffd479; }
+</style>
+</head>
+<body>
+  <div class="box">
+    <h1>连不上 A2 服务器</h1>
+    <p>
+      小张在这边，学习中心在那边 —— 中间的路断了。<br />
+      请确认电脑已联网，然后点下面重试。<br />
+      <code>learnest.cn</code> / <code>39.96.82.119:8090</code>
+    </p>
+    <button onclick="location.replace('https://learnest.cn/')">重试</button>
+  </div>
+</body>
+</html>
