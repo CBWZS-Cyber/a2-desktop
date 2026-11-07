@@ -29,12 +29,16 @@ on:
         required: true
         default: false
         type: boolean
+      release_tag:
+        description: 'Also publish a GitHub release with this tag (e.g. v1.1.2)'
+        required: false
+        type: string
   push:
     tags:
       - 'v*'
 
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 jobs:
@@ -105,6 +109,30 @@ jobs:
           name: a2-desktop-signed
           path: dist-signed/**
           if-no-files-found: error
+
+      - name: Publish release (signed)
+        if: ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != '') && steps.sign.outcome == 'success' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          name: ${{ inputs.release_tag || github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            dist-signed/*.exe
+            dist-signed/*.zip
+          fail_on_unmatched_files: true
+
+      - name: Publish release (unsigned)
+        if: ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != '') && steps.sign.outcome != 'success' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          name: ${{ inputs.release_tag || github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            dist/*.exe
+            dist/*.zip
+          fail_on_unmatched_files: true
 
       - name: Summary
         shell: pwsh
