@@ -21,6 +21,9 @@ repository.
 | Click-through | The window is click-through by default; only opaque character pixels accept the mouse, using an alpha-mask hit test |
 | Drag to move | Dragging moves the pet; the position is persisted and restored on next launch |
 | Tray | Tray icon with open / hide / autostart / reset position / quit |
+| Close behaviour | Configurable: minimise to tray, quit the app, or ask every time (optionally remembering the answer) |
+| Desktop-only settings | A block injected into the account centre page: pet visibility switch and close behaviour, reached over `preload` IPC |
+| File downloads | Document downloads are intercepted and routed through a *Save as* dialog instead of navigating the window away |
 | Start with Windows | Optional `app.setLoginItemSettings` registration |
 | Offline fallback | A local page replaces the remote site when the service is unreachable |
 
@@ -70,16 +73,20 @@ compiled unsigned binaries.
 
 ### Headless self-checks
 
-The app ships with four automation modes used by CI and by hand:
+The app ships with several automation modes used by CI and by hand:
 
 ```bash
 A2兴海智学.exe --smoke          # pet window: sprite/video load, alpha hit test, zero JS errors
 A2兴海智学.exe --smoke-main     # main window: site reachable, offline fallback works
 A2兴海智学.exe --smoke-flow     # window state machine: single instance, close-to-tray, reopen
+A2兴海智学.exe --smoke-desk     # desktop settings: preload bridge, pet switch, close behaviour
+A2兴海智学.exe --smoke-quit     # close path with "quit the app": the process must really exit
 A2兴海智学.exe --shot           # render the pet offscreen and dump PNG screenshots
 ```
 
 Each writes a JSON report to `--smoke-out=<path>` and exits non-zero on failure.
+`--smoke-quit` writes `petHidden` and `closeAction` to the config, so pass
+`--user-data-dir=<temp dir>` when you do not want to disturb a real profile.
 
 ## Releases and code signing
 
