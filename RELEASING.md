@@ -56,7 +56,13 @@ already stores and roughly double the repository size for no gain.
 | --- | --- | --- |
 | 1.1.1 | `v1.1.1` | First public build: desktop pet, click-through, tray, autostart |
 | 1.1.4 | `v1.1.4` | Desktop-only settings block, close-to-tray/quit with a rememberable prompt, quit fix, smaller pet, on-screen position clamp, download handling |
+| 1.1.7 | `v1.1.7` | Update prompts became an in-window HTML layer (capturable and clickable from `--smoke-update`), book-cover width fix carried in from the web app |
 
 `1.1.2` and `1.1.3` were internal builds and were never released: `1.1.3` shipped
 with a broken "quit the app" option (the process stayed in the tray), so it is
 superseded by `1.1.4`.
+
+`1.1.5` and `1.1.6` were published only through the desktop updater (a signed OSS
+URL plus `/api/desktop/version`), to bring the auto-update channel up and to test
+download → silent install → relaunch. They have no GitHub release; `1.1.7` is the
+first build that ships the finished update UI.

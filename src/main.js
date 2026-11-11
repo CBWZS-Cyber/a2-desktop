@@ -5,6 +5,8 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, shell, dialog, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const updater = require('./updater');
+const uiprompt = require('./uiprompt');
 
 const SITE_PRIMARY = 'https://learnest.cn/';
 const SITE_FALLBACK = 'http://39.96.82.119:8090/';
@@ -81,7 +83,7 @@ const PET_W = 164;
 const PET_H = 246;
 
 // 自检模式：窗口挪到屏幕外，绝不打扰正在用电脑的人
-const SMOKE_MODES = ['--smoke', '--smoke-main', '--smoke-flow', '--smoke-desk', '--smoke-quit', '--shot'];
+const SMOKE_MODES = ['--smoke', '--smoke-main', '--smoke-flow', '--smoke-desk', '--smoke-quit', '--smoke-update', '--shot'];
 const OFFSCREEN = process.argv.some((a) => SMOKE_MODES.includes(a));
 
 // 调试版（--dev）：直接跑源码，改完刷新就生效，不用打包。
@@ -103,6 +105,28 @@ if (OFFSCREEN && !IS_DEV) {
     app.setPath('userData', path.join(app.getPath('temp'), 'a2-smoke-profile'));
   } catch (_) {
     /* 设不了就退化成默认目录 */
+  }
+}
+
+// 同一个 profile 被多个自检共用，而 `--smoke-quit` 会把 closeAction 写成 quit 以验证退出。
+// 它自己来不及恢复（进程就是要退掉），下一个 `--smoke-flow` 就遭殃：
+// w1.close() 直接走退出分支，报告一个字都写不出来，看起来像"自检坏了"。
+// 所以在进入任何别的自检前，先把这份共享配置归位。
+if (OFFSCREEN && !IS_DEV && !process.argv.includes('--smoke-quit')) {
+  try {
+    const p = path.join(app.getPath('userData'), 'desktop.json');
+    let cfg = {};
+    try {
+      cfg = JSON.parse(fs.readFileSync(p, 'utf8')) || {};
+    } catch (_) {
+      cfg = {};
+    }
+    if (cfg.closeAction && cfg.closeAction !== 'ask') {
+      cfg.closeAction = 'tray';
+      fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+    }
+  } catch (_) {
+    /* 写不了就按默认走，自检自己会断言出来 */
   }
 }
 
@@ -392,7 +416,11 @@ function createMain() {
     height: 800,
     minWidth: 940,
     minHeight: 640,
-    show: false,
+    // 立刻显示，不等页面加载完。之前是 show:false + did-finish-load 才 show，
+    // 双击到窗口出现要 2 秒，中间屏幕上什么都没有，用户以为没启动，于是点第二下
+    // ——第二下走 second-instance 把窗口顶出来，感觉就是"要双击两遍才开"。
+    // 底色已设深色，先出空窗不会白闪。
+    show: !OFFSCREEN,
     x: OFFSCREEN ? -20000 : undefined,
     y: OFFSCREEN ? -20000 : undefined,
     skipTaskbar: OFFSCREEN,
@@ -522,6 +550,7 @@ function buildTrayMenu() {
       },
     },
     { type: 'separator' },
+    { label: '检查更新', click: () => checkUpdates({ silent: false }) },
     { label: '关于 A2 兴海智学', click: showAbout },
     {
       label: '退出',
@@ -569,6 +598,212 @@ function showAbout() {
     buttons: ['好'],
     noLink: true,
   });
+}
+
+// ── 自动更新 ──────────────────────────────────────────────────
+// 检查只拉约 1 KB 的清单，失败一律放行 —— 断网不该挡住用户用软件。
+// 装法：下安装包 → sha256 校验 → 拉起 Inno 静默覆盖安装 → 本进程退出 → 装完自启。
+// 清单来自 https://learnest.cn/api/desktop/version，安装包在 OSS（签名直链，OSS 上只留最新一份）。
+let updateBusy = false;
+
+function askBox(options) {
+  const owner = mainWin && !mainWin.isDestroyed() ? mainWin : null;
+  return owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options);
+}
+
+/**
+ * 更新相关的提示一律走窗内 HTML 提示层。
+ * 原生对话框是系统窗口：不能截图、无头点不到、进程会挂在那儿等。
+ * 主窗不存在（开机自启那一路）时退回原生，功能不丢。
+ */
+async function askUpdate(options) {
+  if (mainWin && !mainWin.isDestroyed()) {
+    try {
+      if (!mainWin.isVisible()) mainWin.show();
+      mainWin.focus();
+      const r = await uiprompt.ask(mainWin, options);
+      return { response: r };
+    } catch (_) {
+      /* 页面还没就绪之类，退回原生对话框 */
+    }
+  }
+  return askBox(options);
+}
+
+function setTaskbarProgress(ratio) {
+  if (!mainWin || mainWin.isDestroyed()) return;
+  try {
+    mainWin.setProgressBar(ratio);
+  } catch (_) {
+    /* 没有任务栏图标就算了，不影响更新 */
+  }
+}
+
+function notesText(list) {
+  if (!list || !list.length) return '';
+  return '\n\n更新内容：\n' + list.map((n) => '· ' + n).join('\n');
+}
+
+/** 下载并安装。info 来自 updater.check()。 */
+async function downloadAndInstall(info) {
+  setTaskbarProgress(0);
+  let setupPath = '';
+  try {
+    setupPath = await updater.fetchUpdate(info, (r) => setTaskbarProgress(r));
+  } catch (e) {
+    setTaskbarProgress(-1);
+    await askUpdate({
+      type: 'error',
+      title: '更新下载失败',
+      message: '没能下载更新包',
+      detail: `${(e && e.message) || e}\n\n程序可以继续用，稍后再试即可。`,
+      buttons: ['好'],
+      noLink: true,
+    });
+    return;
+  }
+  setTaskbarProgress(-1);
+
+  const confirm = await askUpdate({
+    type: 'question',
+    title: '更新已就绪',
+    message: `新版本 ${info.latest} 已下载完成`,
+    detail:
+      `安装包 ${info.size || ''} 已校验通过。\n\n` +
+      '点「现在安装」后：程序会先关闭，静默覆盖安装，装完自动重新打开。\n' +
+      '没做完的编辑请先保存到本地文件（网页里的内容不受影响，登录态也保留）。',
+    buttons: ['现在安装', '稍后'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  });
+  if (confirm.response !== 0) {
+    // 保留 ready.json：下次启动会提示"已下载好，重启即可安装"
+    console.log(`[update] ${info.latest} 已下载，用户选择稍后安装`);
+    return;
+  }
+
+  updater.runInstaller(setupPath, () => {
+    quitting = true;
+    app.quit();
+  });
+}
+
+/**
+ * @param {{silent?: boolean}} opts  silent=true 用于启动后自动检查：没事发生就完全不打扰。
+ */
+async function checkUpdates(opts) {
+  const silent = !!(opts && opts.silent);
+  if (updateBusy) return;
+  updateBusy = true;
+  try {
+    const prepared = updater.preparedVersion();
+    const info = await updater.check();
+
+    if (!info.ok) {
+      // 铁律：检查失败不打扰、不挡路
+      console.log(`[update] 检查失败：${info.reason}`);
+      if (!silent) {
+        await askUpdate({
+          type: 'warning',
+          title: '检查更新失败',
+          message: '暂时连不上更新服务',
+          detail: `${info.reason || '未知原因'}\n\n程序可以正常使用，稍后再试即可。`,
+          buttons: ['好'],
+          noLink: true,
+        });
+      }
+      return;
+    }
+
+    if (!info.hasUpdate) {
+      // 远端已不是那个版本了，清掉过期残留
+      if (prepared && prepared !== info.latest) updater.clearPrepared();
+      if (!silent) {
+        await askUpdate({
+          type: 'info',
+          title: '检查更新',
+          message: `已是最新版本 v${info.current}`,
+          detail: info.latest ? `服务端最新：v${info.latest}` : '',
+          buttons: ['好'],
+          noLink: true,
+        });
+      }
+      return;
+    }
+
+    // ── 有新版 ──
+    // 用户点过「跳过这个版本」就不再提；但手动点「检查更新」要照常告诉他，
+    // 否则他会以为检查功能坏了。
+    const skipped = String(loadCfg().skipVersion || '');
+    if (silent && skipped && skipped === info.latest) {
+      console.log(`[update] v${info.latest} 已被跳过，不打扰`);
+      return;
+    }
+
+    if (IS_DEV) {
+      // 调试版跑的是源码目录的 electron.exe，装了会把安装版盖掉，所以只提示不动手
+      const r = await askUpdate({
+        type: 'info',
+        title: '发现新版本',
+        message: `v${info.latest} 已发布`,
+        detail:
+          `当前 v${info.current} · 安装包 ${info.size || ''}` +
+          notesText(info.notes) +
+          '\n\n这是调试版，不会自动安装。要用新版本请装正式安装包。',
+        buttons: ['去下载页', '以后再说'],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      });
+      if (r.response === 0 && info.url) shell.openExternal(info.url);
+      return;
+    }
+
+    if (prepared === info.latest) {
+      const r = await askUpdate({
+        type: 'question',
+        title: '更新已就绪',
+        message: `v${info.latest} 已经下载好了`,
+        detail: '上次没来得及安装。现在重启安装吗？',
+        buttons: ['现在安装', '稍后'],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      });
+      if (r.response === 0) {
+        updater.runInstaller(path.join(updater.updateDir(), `A2-Setup-${info.latest}.exe`), () => {
+          quitting = true;
+          app.quit();
+        });
+      }
+      return;
+    }
+
+    const ans = await askUpdate({
+      type: 'question',
+      title: '发现新版本',
+      message: `A2 兴海智学 v${info.latest}`,
+      detail:
+        `当前 v${info.current} · 安装包 ${info.size || ''}` +
+        notesText(info.notes) +
+        '\n\n更新会关闭并重新打开程序，登录状态和设置都保留。' +
+        '\n「跳过这个版本」只是不再主动提醒，之后手动点「检查更新」仍会看到它。',
+      buttons: ['立即更新', '以后再说', '跳过这个版本'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (ans.response === 2) {
+      saveCfg({ skipVersion: info.latest });
+      console.log(`[update] 已跳过 v${info.latest}`);
+      return;
+    }
+    if (ans.response !== 0) return;
+    await downloadAndInstall(info);
+  } finally {
+    updateBusy = false;
+  }
 }
 
 // ── 开机自启 ──────────────────────────────────────────────────
@@ -922,6 +1157,229 @@ function runSmokeQuit() {
 // 桌面设置自检：主窗 preload 桥是否真的可用、桌宠显隐与关闭行为能否落盘。
 // 之前「显示桌面小张没反应」是主窗没挂 preload；「点两下才关掉」是读了写死的
 // aria-checked —— 这里一律用真桥 + 真注入脚本 + 真的点一下滑钮来验。
+// 更新自检：只验"取清单 / 判版本 / 失败放行"，**不下载 82 MB**（那条链路手工验过：
+// 实测 32 s 下完、sha256 一致、就绪标记写对）。要验下载就手动跑一次真更新。
+// 提示层自检：真的渲染、真的截图、真的点按钮。
+// 这条存在的唯一理由：原生对话框截不到、点不了，而窗内 HTML 提示层两样都行。
+async function smokePrompt() {
+  const out = { ok: false };
+  const dir = path.dirname(writeSmokePath());
+  const win = new BrowserWindow({
+    width: 900,
+    height: 620,
+    show: false,
+    x: -20000,
+    y: -20000,
+    webPreferences: { contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
+  });
+  const opts = {
+    title: '发现新版本',
+    message: 'A2 兴海智学 v9.9.9',
+    detail: `当前 v${app.getVersion()} · 安装包 82.1 MB\n\n更新内容：\n· 新增自动更新：启动后静默检查，发现新版本可一键下载安装\n· 新版装完自动重新打开，登录状态与设置都保留\n· 托盘菜单新增「检查更新」\n\n更新会关闭并重新打开程序，登录状态和设置都保留。`,
+    buttons: ['立即更新', '以后再说', '跳过这个版本'],
+    defaultId: 0,
+    cancelId: 1,
+  };
+  try {
+    await win.loadURL(
+      'data:text/html;charset=utf-8,' +
+        encodeURIComponent(
+          '<html><body style="margin:0;height:100vh;background:linear-gradient(160deg,#F7F9FC 0%,#E6EDF6 100%)"></body></html>'
+        )
+    );
+    // 隐藏窗口会把 CSS 动画节流在起始帧，截出来是半透明的；截图时关掉入场动画
+    await win.webContents.executeJavaScript('window.__a2upNoAnim = true', true);
+
+    // 亮色
+    const pending = uiprompt.ask(win, opts);
+    await new Promise((r) => setTimeout(r, 350));
+    out.light = await uiprompt.visible(win);
+    out.light.shot = path.join(dir, 'shot_update_prompt.png');
+    fs.writeFileSync(out.light.shot, (await win.webContents.capturePage()).toPNG());
+    out.light.bytes = fs.statSync(out.light.shot).size;
+    out.clicked = await uiprompt.click(win, 1);
+    out.answer = await pending;
+    out.goneAfterClick = (await uiprompt.visible(win)) === null;
+
+    // 暗色：外观要跟着站点主题走，不能白卡片糊在黑页面上
+    await win.webContents.executeJavaScript(
+      `document.documentElement.setAttribute('data-theme','dark')`,
+      true
+    );
+    await uiprompt.render(win, opts);
+    await new Promise((r) => setTimeout(r, 200));
+    out.dark = await uiprompt.visible(win);
+    out.dark.shot = path.join(dir, 'shot_update_prompt_dark.png');
+    fs.writeFileSync(out.dark.shot, (await win.webContents.capturePage()).toPNG());
+    out.dark.bytes = fs.statSync(out.dark.shot).size;
+    await uiprompt.click(win, 0);
+
+    out.ok =
+      !!out.light &&
+      out.light.buttons === 3 &&
+      out.light.primary === '立即更新' &&
+      out.light.title === '发现新版本' &&
+      out.answer === 1 &&
+      out.goneAfterClick === true &&
+      out.light.bytes > 8000 &&
+      !!out.dark &&
+      out.dark.dark === '1' &&
+      out.dark.bytes > 8000;
+  } catch (e) {
+    out.error = String((e && e.message) || e);
+  } finally {
+    if (!win.isDestroyed()) win.destroy();
+  }
+  return out;
+}
+
+/**
+ * 真实链路自检：把清单地址指到本地假服务，跑一遍 checkUpdates()，
+ * 看提示是不是在真主窗里弹出来、点「以后再说」能不能正常收场。
+ * 这条替代了"人工盯着屏幕看弹窗"，也替代了截全屏。
+ */
+async function smokeUpdateFlow(port) {
+  const out = { ok: false };
+  try {
+    saveCfg({ petHidden: true, skipVersion: '' });
+    const w = createMain();
+    await new Promise((r) => {
+      const t = setTimeout(r, 15000);
+      w.webContents.once('did-finish-load', () => {
+        clearTimeout(t);
+        r();
+      });
+    });
+    await new Promise((r) => setTimeout(r, 300));
+
+    updater.setVersionUrl(`http://127.0.0.1:${port}/v.json`);
+    out.before = await uiprompt.visible(w);
+    const p = checkUpdates({ silent: true });
+    await new Promise((r) => setTimeout(r, 900));
+    out.ui = await uiprompt.visible(w);
+    // 真站点可能有 CSP：注入的 <style> 被拦掉就会变成裸文字按钮，这里查真实计算样式
+    out.style = await w.webContents.executeJavaScript(
+      `(function(){ var b = document.querySelector('#a2-up-mask .a2up-btn.is-primary');
+        if (!b) return null;
+        var cs = getComputedStyle(b);
+        var card = document.querySelector('#a2-up-mask .a2up-card');
+        return { bg: cs.backgroundColor, color: cs.color, radius: cs.borderTopLeftRadius,
+                 cardRadius: card ? getComputedStyle(card).borderTopLeftRadius : '' }; })()`,
+      true
+    );
+    out.shot = path.join(path.dirname(writeSmokePath()), 'shot_update_real.png');
+    fs.writeFileSync(out.shot, (await w.webContents.capturePage()).toPNG());
+    out.clicked = await uiprompt.click(w, 1); // 以后再说
+    await p.catch(() => {});
+    out.gone = (await uiprompt.visible(w)) === null;
+    out.skipStored = String(loadCfg().skipVersion || '');
+    out.ok =
+      out.before === null &&
+      !!out.ui &&
+      out.ui.buttons === 3 &&
+      out.ui.msg.indexOf('9.9.9') >= 0 &&
+      !!out.style &&
+      out.style.bg === 'rgb(21, 101, 192)' &&
+      parseFloat(out.style.cardRadius) >= 12 &&
+      out.clicked === true &&
+      out.gone === true &&
+      out.skipStored === '';
+    updater.setVersionUrl('');
+  } catch (e) {
+    out.error = String((e && e.message) || e);
+  }
+  return out;
+}
+
+function runSmokeUpdate() {
+  const report = { ok: false, steps: [] };
+  const t0 = Date.now();
+  const s = {};
+  const done = () => {
+    report.ms = Date.now() - t0;
+    report.steps = [s];
+    writeSmoke(report);
+    quitting = true;
+    app.exit(report.ok ? 0 : 1);
+  };
+  setTimeout(() => {
+    s.timeout = true;
+    done();
+  }, 30000);
+
+  const http = require('http');
+  // 假清单指向 dist/version.json 里的真实签名直链，顺便验证"清单能被解析"
+  let realUrl = 'https://example.invalid/x.exe';
+  let realSha = '';
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'dist', 'version.json'), 'utf8'));
+    realUrl = (m.downloads && m.downloads.win64) || realUrl;
+    realSha = m.sha256 || '';
+  } catch (_) {
+    /* 没发过版也能测逻辑 */
+  }
+
+  const fake = {
+    latest: '9.9.9',
+    releasedAt: '2026-01-01',
+    downloads: { win64: realUrl },
+    sizeWin64: '82.1 MB',
+    sha256: realSha,
+    notes: ['smoke'],
+  };
+  const srv = http.createServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(fake));
+  });
+
+  srv.listen(0, '127.0.0.1', async () => {
+    const port = srv.address().port;
+    try {
+      s.current = app.getVersion();
+
+      s.local = await updater.checkFrom(`http://127.0.0.1:${port}/v.json`);
+      s.localOk = !!(s.local.ok && s.local.hasUpdate && s.local.latest === '9.9.9');
+
+      // 同一份清单但版本号写得和本机一样 → 不该提示更新
+      const sameSrv = http.createServer((_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ...fake, latest: s.current }));
+      });
+      await new Promise((r) => sameSrv.listen(0, '127.0.0.1', r));
+      s.sameVer = await updater.checkFrom(`http://127.0.0.1:${sameSrv.address().port}/v.json`);
+      s.sameVerNoUpdate = s.sameVer.ok && s.sameVer.hasUpdate === false;
+      sameSrv.close();
+
+      // 连不上必须放行，不许抛
+      s.dead = await updater.checkFrom('http://127.0.0.1:1/none.json');
+      s.deadFailsSafe = s.dead.ok === false && !!s.dead.reason;
+
+      // 线上清单可达性（只要求 ok，不要求有新版 —— 有没有新版取决于当前发到哪一版）
+      s.online = await updater.check();
+      s.onlineReachable = s.online.ok === true;
+
+      // 提示层：渲染 → 截图（亮/暗）→ 点按钮 → 断言应答与自动关闭
+      s.prompt = await smokePrompt();
+
+      // 真实链路：清单说 9.9.9，跑一遍 checkUpdates，提示得在真主窗里弹出来
+      s.flow = await smokeUpdateFlow(port);
+
+      report.ok =
+        s.localOk &&
+        s.sameVerNoUpdate &&
+        s.deadFailsSafe &&
+        s.onlineReachable &&
+        !!s.prompt.ok &&
+        !!s.flow.ok;
+    } catch (e) {
+      s.error = String((e && e.message) || e);
+    } finally {
+      srv.close();
+      done();
+    }
+  });
+}
+
 function runSmokeDesk() {
   const report = { ok: false, steps: [] };
   const t0 = Date.now();
@@ -1260,6 +1718,11 @@ if (!app.requestSingleInstanceLock()) {
       return;
     }
 
+    if (process.argv.includes('--smoke-update')) {
+      runSmokeUpdate();
+      return;
+    }
+
     if (process.argv.includes('--shot')) {
       runShot();
       return;
@@ -1365,8 +1828,14 @@ if (!app.requestSingleInstanceLock()) {
     const cfg = loadCfg();
     if (!autostart) {
       if (!cfg.firstRunDone) saveCfg({ firstRunDone: true });
-      setTimeout(() => createMain(), 600);
+      // 不再延迟 600ms：那 600ms 是窗口出现前纯等待的空白期，
+      // 双击后屏幕没反应，用户就会去点第二下。桌宠照常同时建，不冲突。
+      createMain();
     }
+
+    // 自动更新：延迟几秒再查，别跟首屏抢带宽。没新版就一声不响。
+    // 自检/截图模式一律不查 —— 无人值守的进程被弹窗卡住就再也退不出来了。
+    if (!OFFSCREEN) setTimeout(() => checkUpdates({ silent: true }), updater.CHECK_DELAY_MS);
   });
 
   app.on('window-all-closed', (e) => {

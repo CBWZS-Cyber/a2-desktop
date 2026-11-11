@@ -1,7 +1,7 @@
 {
   "name": "a2-desktop",
   "productName": "A2兴海智学",
-  "version": "1.1.4",
+  "version": "1.1.7",
   "description": "A2 兴海智学 · 桌面助手（小张桌宠 + 学习中心）",
   "main": "src/main.js",
   "author": "曹博文",

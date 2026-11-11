@@ -5,44 +5,42 @@ Windows desktop companion for the Learnest study assistant.
 - **installer** — Simplified Chinese wizard, desktop and Start Menu shortcuts, uninstaller, optional start with Windows
 - **portable zip** — the executable is the upstream Electron binary renamed without rewriting its PE resources, so it also runs on machines where Smart App Control blocks freshly compiled unsigned binaries
 
-## What's in 1.1.4
+## What's in 1.1.7
 
-### Close button now does what you configure
+### Update prompts now live inside the window
 
-- New desktop-only settings block in the account centre: **Show desktop pet** (a sliding
-  switch) and **When closing the window** (minimise to tray / quit the app / ask every time).
-- "Ask every time" shows a two-button dialog with a *remember my choice* checkbox.
-- Opening the pet switches the setting back to *minimise* automatically — closing the
-  window would otherwise take the pet away with it and look like the app vanished —
-  but an explicit *quit* choice afterwards is honoured, not overridden.
+`dialog.showMessageBox` was replaced by an HTML layer injected into the main
+window (`src/uiprompt.js`). Native dialogs sit outside the renderer, which meant
+the update prompt could not be captured in a screenshot, could not be clicked by
+a script, and blocked unattended test runs until somebody dismissed it by hand.
+
+- The prompt follows the site's light/dark theme and matches the app instead of
+  looking like a system message box.
+- It can be driven end to end headlessly: render, `capturePage()`, click a button,
+  assert the result. `--smoke-update` does exactly that, including a real
+  `checkUpdates()` run against a local fake manifest.
+- Every update prompt uses it, not just the "new version" one: download failures,
+  "already up to date", "update ready to install" and the debug-build notice.
+- If no main window exists yet (silent start at login) it falls back to a native
+  dialog, so the prompt is never lost.
+- Prompts resolve when the window closes or navigates away, so a page redirect
+  can no longer leave the updater stuck in a busy state forever.
 
 ### Fixes
 
-- **Choosing "quit the app" left the process running in the tray.** `app.quit()` was
-  called synchronously from inside the window's `close` handler, so Electron treated
-  the quit as cancelled by the very window it was closing. Deferred by one tick.
-- **The pet switch did nothing on the first click, and closed on the second.** The
-  switch read its state from the DOM before the asynchronous settings reply landed.
-  It now only trusts the state returned by the main process.
-- **The pet could appear half off-screen in a corner.** `workArea` can briefly report
-  zero size right after boot or a monitor wake, which produced negative coordinates;
-  the old clamp then allowed 70% of the body to sit outside the display. The clamp now
-  keeps the whole window inside the work area, with a fallback chain when the work
-  area is empty, plus a self-heal pass 1.5 s after launch.
-- **Downloading a Word document blanked the main window.** The site navigates to the
-  file URL, which turned the window into a document viewer. Downloads are now
-  intercepted, saved through a *Save as* dialog, and the `Zone.Identifier` mark is
-  removed afterwards so Word opens the file normally instead of in Protected View.
+- **Some book covers showed a white strip on the right.** This one is in the web
+  app, not the shell: `.b-cover` is a `<button>`, and Chromium's default
+  `align-items: flex-start` made the cover shrink to its content width inside a
+  column flex container — the longer the title, the narrower the cover. Fixed by
+  setting `align-items: stretch`.
 
-### Other changes
+### Earlier
 
-- Double-clicking the launcher always opens the study centre; only `--autostart`
-  starts silently with the pet alone.
-- The pet is 18% smaller (200×300 → 164×246) — uniformly scaled, so the bubble, the
-  gear and the sprite keep their proportions.
-- The hover gear at the pet's top-right corner was already there in the source; it is
-  now documented and covered by the smoke tests.
-- The desktop build hides the site's ICP filing footer. The browser build keeps it.
+`1.1.4` added the desktop-only settings block (pet visibility, close behaviour),
+fixed the "quit the app" option, the sliding switch and the pet position clamp,
+and routed downloads through a *Save as* dialog. See that release for details.
+`1.1.5` and `1.1.6` were builds used to bring the auto-update channel up; they
+were published through the updater only and never got a GitHub release.
 
 ## Code signing
 

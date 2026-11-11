@@ -24,6 +24,8 @@ repository.
 | Close behaviour | Configurable: minimise to tray, quit the app, or ask every time (optionally remembering the answer) |
 | Desktop-only settings | A block injected into the account centre page: pet visibility switch and close behaviour, reached over `preload` IPC |
 | File downloads | Document downloads are intercepted and routed through a *Save as* dialog instead of navigating the window away |
+| Auto-update | A ~1 KB manifest is fetched silently 8 s after launch; the installer is downloaded, sha256-checked and run silently, then the app relaunches itself. Checks failing never block the app |
+| In-app prompts | Update prompts are rendered as an HTML layer inside the window, not native dialogs, so they follow the site theme and can be covered by headless self-checks |
 | Start with Windows | Optional `app.setLoginItemSettings` registration |
 | Offline fallback | A local page replaces the remote site when the service is unreachable |
 
@@ -81,12 +83,23 @@ A2兴海智学.exe --smoke-main     # main window: site reachable, offline fallb
 A2兴海智学.exe --smoke-flow     # window state machine: single instance, close-to-tray, reopen
 A2兴海智学.exe --smoke-desk     # desktop settings: preload bridge, pet switch, close behaviour
 A2兴海智学.exe --smoke-quit     # close path with "quit the app": the process must really exit
+A2兴海智学.exe --smoke-update   # manifest parsing, version compare, fail-safe, in-window prompt
 A2兴海智学.exe --shot           # render the pet offscreen and dump PNG screenshots
 ```
 
 Each writes a JSON report to `--smoke-out=<path>` and exits non-zero on failure.
 `--smoke-quit` writes `petHidden` and `closeAction` to the config, so pass
 `--user-data-dir=<temp dir>` when you do not want to disturb a real profile.
+
+`--smoke-update` also proves the update prompt is verifiable without a human:
+it renders the layer in an offscreen window, captures it (light and dark) with
+`capturePage()`, clicks a button through the same handler a user would hit, and
+then drives a real `checkUpdates()` run against a local fake manifest to confirm
+the prompt appears in the actual main window and closes cleanly.
+
+Earlier versions used `dialog.showMessageBox` for this. Native dialogs live
+outside the renderer, so they cannot be captured, cannot be clicked by a script,
+and block unattended runs — which is why the prompt became a DOM layer.
 
 ## Releases and code signing
 
